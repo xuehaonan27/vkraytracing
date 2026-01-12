@@ -13,7 +13,7 @@ constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;
 
 class HelloTriangleApplication {
- public:
+public:
   void run() {
     initWindow();
     initVulkan();
@@ -21,8 +21,8 @@ class HelloTriangleApplication {
     cleanup();
   }
 
- private:
-  GLFWwindow *window;
+private:
+  GLFWwindow* window;
 
   void initWindow() {
     glfwInit();
@@ -52,8 +52,7 @@ int main() {
 
   try {
     app.run();
-  }
-  catch (const std::exception &e) {
+  } catch (const std::exception& e) {
     std::cerr << e.what() << std::endl;
     return EXIT_FAILURE;
   }
