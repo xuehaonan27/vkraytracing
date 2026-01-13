@@ -16,12 +16,12 @@ endif()
 
 find_package(glfw3 REQUIRED)
 if (glfw3_FOUND)
-    message(STATUS "Found GLFW3")
+    message(STATUS "Found GLFW3: ${glfw3_INCLUDE_DIRS}")
 endif()
 
 find_package(glm REQUIRED)
 if (glm_FOUND)
-    message(STATUS "Found GLM")
+    message(STATUS "Found GLM: ${glm_INCLUDE_DIRS}")
 endif()
 
 # Include header file directories
