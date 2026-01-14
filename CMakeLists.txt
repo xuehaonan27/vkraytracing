@@ -33,6 +33,58 @@ include_directories(
     ${glm_INCLUDE_DIRS}
 )
 
+find_program(SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/Bin)
+if(NOT SLANGC_EXECUTABLE)
+    message(FATAL_ERROR "slangc not found!")
+endif()
+
+function (add_slang_shader_target TARGET)
+    cmake_parse_arguments("SHADER" "" "" "SOURCES" ${ARGN})
+    set(SHADERS_DIR ${CMAKE_CURRENT_LIST_DIR}/shaders)
+    set(SHADER_OUTPUT_DIR ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders)
+    set(ENTRY_POINTS -entry vertMain -entry fragMain)
+
+    add_custom_command(
+        OUTPUT ${SHADER_OUTPUT_DIR}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}
+    )
+    # add_custom_command (
+    #     OUTPUT  ${SHADERS_DIR}/slang.spv
+    #     COMMAND ${SLANGC_EXECUTABLE} ${SHADER_SOURCES} 
+    #         -target spirv
+    #         -profile spirv_1_4
+    #         -emit-spirv-directly
+    #         -fvk-use-entrypoint-name ${ENTRY_POINTS}
+    #         -o slang.spv
+    #     WORKING_DIRECTORY ${SHADERS_DIR}
+    #     DEPENDS ${SHADERS_DIR} ${SHADER_SOURCES}
+    #     COMMENT "Compiling Slang Shaders"
+    #     VERBATIM
+    # )
+
+    foreach(SHADER_SOURCE ${SHADER_SOURCES})
+        get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
+        set(OUTPUT_FILE ${SHADER_OUTPUT_DIR}/${SHADER_NAME}.spv)
+        
+        add_custom_command(
+            OUTPUT ${OUTPUT_FILE}
+            COMMAND ${SLANGC_EXECUTABLE}
+                ${SHADERS_DIR}/${SHADER_SOURCE}
+                -target spirv
+                -profile spirv_1_4
+                -emit-spirv-directly
+                -fvk-use-entrypoint-name
+                ${ENTRY_POINTS}
+                -o ${OUTPUT_FILE}
+            DEPENDS ${SHADERS_DIR}/${SHADER_SOURCE} ${SHADER_OUTPUT_DIR}
+            COMMENT "Compiling Slang shader: ${SHADER_SOURCE}"
+            VERBATIM
+        )
+        list(APPEND OUTPUT_FILES ${OUTPUT_FILE})
+    endforeach()
+
+   add_custom_target(${TARGET} DEPENDS ${OUTPUT_FILES})
+endfunction()
 
 add_executable(
     ${PROJECT_NAME}
@@ -46,5 +98,8 @@ target_link_libraries(
     glfw
     glm::glm
 )
+
+add_slang_shader_target(shader_target SOURCES shader.slang)
+add_dependencies(${PROJECT_NAME} shader_target)
 
 # Copy textures and models

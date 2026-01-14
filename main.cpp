@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
 #include <glm/glm.hpp>
 #include <iostream>
 #include <limits>
@@ -22,6 +23,23 @@ constexpr bool enableValidationLayers = false;
 #else
 constexpr bool enableValidationLayers = true;
 #endif // NDEBUG
+
+static std::vector<char> readFile(const std::string& filename) {
+  // start read at the end of the file
+  std::ifstream file(filename, std::ios::ate | std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("failed to open file!");
+  }
+
+  std::vector<char> buffer(file.tellg());
+
+  // Seek back to the beginning of the file
+  file.seekg(0, std::ios::beg);
+  file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+  file.close();
+
+  return buffer;
+}
 
 class HelloTriangleApplication {
 public:
@@ -49,11 +67,15 @@ private:
   vk::Extent2D swapChainExtent;
   std::vector<vk::raii::ImageView> swapChainImageViews;
 
+  vk::raii::PipelineLayout pipelineLayout = nullptr;
+  vk::raii::Pipeline graphicsPipeline = nullptr;
+
   const std::vector<const char*> requiredDeviceExtension = {
       vk::KHRSwapchainExtensionName,
       vk::KHRSpirv14ExtensionName,
       vk::KHRSynchronization2ExtensionName,
-      vk::KHRCreateRenderpass2ExtensionName
+      vk::KHRCreateRenderpass2ExtensionName,
+      vk::KHRShaderDrawParametersExtensionName
   };
 
   void initWindow() {
@@ -71,6 +93,7 @@ private:
     createLogicalDevice();
     createSwapChain();
     createImageViews();
+    createGraphicsPipeline();
   }
 
   void mainLoop() {
@@ -413,6 +436,156 @@ private:
       // Here the constructor of `vk::raii::ImageView` borrows `imageViewCreateInfo`, not moving
       swapChainImageViews.emplace_back(device, imageViewCreateInfo);
     }
+  }
+
+  void createGraphicsPipeline() {
+    auto shaderCode = readFile("shaders/shader.spv");
+    vk::raii::ShaderModule shaderModule = createShaderModule(shaderCode);
+
+    vk::PipelineShaderStageCreateInfo vertShaderStageInfo {
+        .stage = vk::ShaderStageFlagBits::eVertex,
+        .module = shaderModule,
+        .pName = "vertMain",
+        .pSpecializationInfo = nullptr, // shader compile time constants assignment
+    };
+
+    vk::PipelineShaderStageCreateInfo fragShaderStageInfo {
+        .stage = vk::ShaderStageFlagBits::eFragment,
+        .module = shaderModule,
+        .pName = "fragMain",
+        .pSpecializationInfo = nullptr, // shader compile time constants assignment
+    };
+
+    vk::PipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+    // Vertex input
+    vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+
+    // Input assembly
+    vk::PipelineInputAssemblyStateCreateInfo inputAssembly {
+        .topology = vk::PrimitiveTopology::eTriangleList
+    };
+
+    // // Viewports and scissors
+    // vk::Viewport viewport {
+    //     .x = 0.0f,
+    //     .y = 0.0f,
+    //     .width = static_cast<float>(swapChainExtent.width),
+    //     .height = static_cast<float>(swapChainExtent.height),
+    //     .minDepth = 0.0f,
+    //     .maxDepth = 1.0f
+    // };
+    // vk::Rect2D scissor {vk::Offset2D {0, 0}, swapChainExtent};
+
+    // Dynamic states
+    std::vector dynamicStates = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamicState {
+        .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+        .pDynamicStates = dynamicStates.data()
+    };
+
+    // Viewports and scissors
+    vk::PipelineViewportStateCreateInfo viewportState {
+        .viewportCount = 1,
+        .pViewports = nullptr, // Set statically here if dynamic states disabled
+        .scissorCount = 1,
+        .pScissors = nullptr // Set statically here if dynamic states disabled
+    };
+
+    // Rasterizer
+    vk::PipelineRasterizationStateCreateInfo rasterizer {
+        .depthClampEnable = vk::False,
+        .rasterizerDiscardEnable = vk::False,
+        .polygonMode = vk::PolygonMode::eFill,
+        .cullMode = vk::CullModeFlagBits::eBack,
+        .frontFace = vk::FrontFace::eClockwise,
+        .depthBiasEnable = vk::False,
+        .depthBiasSlopeFactor = 1.0f,
+        .lineWidth = 1.0f
+    };
+
+    // Multisamlping
+    // One of the ways to perform antialiasing. GPU feature needed.
+    vk::PipelineMultisampleStateCreateInfo multisampling {
+        .rasterizationSamples = vk::SampleCountFlagBits::e1,
+        .sampleShadingEnable = vk::False
+    };
+
+    // Depth and stencil testing
+    // vk::PipelineDepthStencilStateCreateInfo;
+
+    // Color blending
+    vk::PipelineColorBlendAttachmentState colorBlendAttachment {
+        .blendEnable = vk::False,
+        .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG
+            | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
+    };
+
+    // Alpha blending: the new color is to be blended with the old color based on its opacity.
+    /*
+    colorBlendAttachment.blendEnable = vk::True;
+    colorBlendAttachment.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
+    colorBlendAttachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+    colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
+    colorBlendAttachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+    colorBlendAttachment.dstAlphaBlendFactor = vk::BlendFactor::eZero;
+    colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
+    */
+
+    // references the array of structures for all the framebuffers and allows you to set blend
+    // constants that you can use as blend factors in the aforementioned calculations
+    vk::PipelineColorBlendStateCreateInfo colorBlending {
+        .logicOpEnable = vk::False,
+        .logicOp = vk::LogicOp::eCopy,
+        .attachmentCount = 1,
+        .pAttachments = &colorBlendAttachment
+    };
+
+    // Pipeline layout
+    // Globals similar to dynamic state variables that can be changed at drawing time to alter
+    // the behavior of shaders without having to recreate them.
+    // Commonly used to pass the transformation matrix to the vertex shader, or to create texture
+    // samplers in the fragment shader.
+    vk::PipelineLayoutCreateInfo pipelineLayoutInfo {
+        .setLayoutCount = 0,
+        .pushConstantRangeCount = 0
+    };
+    pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
+
+    // Pipeline rendering color
+    vk::PipelineRenderingCreateInfo pipelineRenderingCreateInfo {
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &swapChainImageFormat
+    };
+
+    // Create the pipeline
+    vk::GraphicsPipelineCreateInfo pipelineInfo {
+        .pNext = &pipelineRenderingCreateInfo,
+        .stageCount = 2,
+        .pStages = shaderStages,
+        .pVertexInputState = &vertexInputInfo,
+        .pInputAssemblyState = &inputAssembly,
+        .pViewportState = &viewportState,
+        .pRasterizationState = &rasterizer,
+        .pMultisampleState = &multisampling,
+        .pColorBlendState = &colorBlending,
+        .pDynamicState = &dynamicState,
+        .layout = pipelineLayout,
+        .renderPass = nullptr, // because using dynamic rendering instead of traditional render pass
+        .basePipelineHandle = VK_NULL_HANDLE,
+        .basePipelineIndex = -1
+    };
+
+    graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
+  }
+
+  [[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char>& code) const {
+    vk::ShaderModuleCreateInfo createInfo {
+        .codeSize = code.size() * sizeof(char),
+        .pCode = reinterpret_cast<const uint32_t*>(code.data())
+    };
+    vk::raii::ShaderModule shaderModule {device, createInfo};
+    return shaderModule;
   }
 };
 
