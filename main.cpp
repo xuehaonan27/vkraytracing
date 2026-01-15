@@ -59,6 +59,7 @@ private:
   vk::raii::PhysicalDevice physicalDevice = nullptr;
   vk::raii::Device device = nullptr;
   // queues are implicitly cleaned up when the device is destroyed, no need for cleanup
+  uint32_t queueIndex = ~0;
   vk::raii::Queue queue = nullptr;
   vk::raii::SwapchainKHR swapChain = nullptr;
   std::vector<vk::Image> swapChainImages;
@@ -69,6 +70,15 @@ private:
 
   vk::raii::PipelineLayout pipelineLayout = nullptr;
   vk::raii::Pipeline graphicsPipeline = nullptr;
+
+  vk::raii::CommandPool commandPool = nullptr;
+  vk::raii::CommandBuffer commandBuffer = nullptr;
+
+  // Semaphores to synchronize GPU operations
+  vk::raii::Semaphore presentCompleteSemaphore = nullptr;
+  vk::raii::Semaphore renderFinishedSemaphore = nullptr;
+  // Fence to synchronize operations between GPU and CPU
+  vk::raii::Fence drawFence = nullptr;
 
   const std::vector<const char*> requiredDeviceExtension = {
       vk::KHRSwapchainExtensionName,
@@ -94,12 +104,18 @@ private:
     createSwapChain();
     createImageViews();
     createGraphicsPipeline();
+    createCommandPool();
+    createCommandBuffer();
+    createSyncObjects();
   }
 
   void mainLoop() {
     while (!glfwWindowShouldClose(window)) {
       glfwPollEvents();
+      drawFrame();
     }
+
+    device.waitIdle();
   }
 
   void cleanup() {
@@ -275,7 +291,7 @@ private:
   }
 
   void createLogicalDevice() {
-    uint32_t queueIndex = findQueueFamilies(physicalDevice);
+    uint32_t qindex = findQueueFamilies(physicalDevice);
 
     // // Specify the set of device features we will use
     // vk::PhysicalDeviceFeatures deviceFeatures;
@@ -289,7 +305,7 @@ private:
             // vk::PhysicalDeviceFeatures2 (empty for now)
             {},
             // Enable dynamic rendering from Vulkan 1.3
-            {.dynamicRendering = true},
+            {.synchronization2 = true, .dynamicRendering = true},
             // Enable extended dynamic state from the extension
             {.extendedDynamicState = true}
         };
@@ -297,7 +313,7 @@ private:
     // This structure describes the number of queues we want for a single queue family
     float queuePriority = 0.5f;
     vk::DeviceQueueCreateInfo deviceQueueCreateInfo {
-        .queueFamilyIndex = queueIndex, // graphics capabilities
+        .queueFamilyIndex = qindex, // graphics capabilities
         .queueCount = 1, // 1 queue per family
         .pQueuePriorities = &queuePriority // required even only 1 queue
     };
@@ -312,7 +328,8 @@ private:
 
     device = vk::raii::Device(physicalDevice, deviceCreateInfo);
     // Logical device, queue family index, queue index in the family
-    queue = vk::raii::Queue(device, queueIndex, 0);
+    queueIndex = qindex;
+    queue = vk::raii::Queue(device, qindex, 0);
   }
 
   uint32_t findQueueFamilies(vk::raii::PhysicalDevice physicalDevice) {
@@ -466,17 +483,6 @@ private:
         .topology = vk::PrimitiveTopology::eTriangleList
     };
 
-    // // Viewports and scissors
-    // vk::Viewport viewport {
-    //     .x = 0.0f,
-    //     .y = 0.0f,
-    //     .width = static_cast<float>(swapChainExtent.width),
-    //     .height = static_cast<float>(swapChainExtent.height),
-    //     .minDepth = 0.0f,
-    //     .maxDepth = 1.0f
-    // };
-    // vk::Rect2D scissor {vk::Offset2D {0, 0}, swapChainExtent};
-
     // Dynamic states
     std::vector dynamicStates = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     vk::PipelineDynamicStateCreateInfo dynamicState {
@@ -586,6 +592,201 @@ private:
     };
     vk::raii::ShaderModule shaderModule {device, createInfo};
     return shaderModule;
+  }
+
+  void createCommandPool() {
+    vk::CommandPoolCreateInfo poolInfo {
+        // will record a command buffer every frame, so must be able to rest and rerecord over it.
+        .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+        .queueFamilyIndex = queueIndex
+    };
+
+    commandPool = vk::raii::CommandPool(device, poolInfo);
+  }
+
+  void createCommandBuffer() {
+    vk::CommandBufferAllocateInfo allocInfo {
+        .commandPool = commandPool,
+        .level = vk::CommandBufferLevel::ePrimary,
+        .commandBufferCount = 1
+    };
+
+    commandBuffer = std::move(vk::raii::CommandBuffers(device, allocInfo).front());
+  }
+
+  void recordCommandBuffer(uint32_t imageIndex) {
+    vk::CommandBufferBeginInfo commandBufferBeginInfo {};
+    commandBuffer.begin(commandBufferBeginInfo);
+
+    // With dynamic rendering, no need for creating a render pass or framebuffers
+    // Instead, specify the attachments directly when begin rendering
+    // Before starting rendering, transition the swapchain image to COLOR_ATTACHMENT_OPTIMAL
+    transition_image_layout(
+        imageIndex,
+        vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eColorAttachmentOptimal,
+        {}, // srcAccessMask (no need to wait for previous operations)
+        vk::AccessFlagBits2::eColorAttachmentWrite, // dstAccessMask
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput, // srcStage
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput // dstStage
+    );
+
+    // Set up the color attachment
+    vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+    vk::RenderingAttachmentInfo attachmentInfo = {
+        .imageView = swapChainImageViews[imageIndex],
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal, // the layout during rendering
+        .loadOp = vk::AttachmentLoadOp::eClear, // what to do with the image before rendering
+        .storeOp = vk::AttachmentStoreOp::eStore, // what to do with the image after rendering
+        .clearValue = clearColor
+    };
+
+    vk::RenderingInfo renderingInfo = {
+        .renderArea = {.offset = {0, 0}, .extent = swapChainExtent},
+        .layerCount = 1, // the number of layers to reader to, which is 1 for non-layered image
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &attachmentInfo
+    };
+
+    commandBuffer.beginRendering(renderingInfo);
+
+    // Bind the graphics pipeline
+    commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, graphicsPipeline);
+
+    // Because using dynamic rendering, specify viewport and scissor state for this pipeline now
+    // Viewports and scissors
+    vk::Viewport viewport {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = static_cast<float>(swapChainExtent.width),
+        .height = static_cast<float>(swapChainExtent.height),
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f
+    };
+    vk::Rect2D scissor {vk::Offset2D {0, 0}, swapChainExtent};
+    commandBuffer.setViewport(0, viewport);
+    commandBuffer.setScissor(0, scissor);
+
+    // Issue the draw command for the triangle
+    // (vertexCount, instanceCount, firstVertex, firstInstance)
+    commandBuffer.draw(3, 1, 0, 0);
+
+    // Finishing up
+    commandBuffer.endRendering();
+
+    // After rendering, transition the image layout back so it can be presented to the screen
+    transition_image_layout(
+        imageIndex,
+        vk::ImageLayout::eColorAttachmentOptimal,
+        vk::ImageLayout::ePresentSrcKHR,
+        vk::AccessFlagBits2::eColorAttachmentWrite,
+        {},
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        vk::PipelineStageFlagBits2::eBottomOfPipe
+    );
+
+    commandBuffer.end();
+  }
+
+  // Transition the image layout to one that is suitable for rendering
+  void transition_image_layout(
+      uint32_t imageIndex,
+      vk::ImageLayout oldLayout,
+      vk::ImageLayout newLayout,
+      vk::AccessFlags2 srcAccessMask,
+      vk::AccessFlags2 dstAccessMask,
+      vk::PipelineStageFlags2 srcStageMask,
+      vk::PipelineStageFlags2 dstStageMask
+  ) {
+    vk::ImageMemoryBarrier2 barrier = {
+        .srcStageMask = srcStageMask,
+        .srcAccessMask = srcAccessMask,
+        .dstStageMask = dstStageMask,
+        .dstAccessMask = dstAccessMask,
+        .oldLayout = oldLayout,
+        .newLayout = newLayout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = swapChainImages[imageIndex],
+        .subresourceRange = {
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1
+        }
+    };
+    vk::DependencyInfo dependencyInfo =
+        {.dependencyFlags = {}, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
+    commandBuffer.pipelineBarrier2(dependencyInfo);
+  }
+
+  // Steps:
+  // 1. Wait for the previous frame to finish
+  // 2. Acquire an image from the swap chain
+  // 3. Record a command buffer which draws the scene onto that image
+  // 4. Submit the recorded command buffer
+  // 5. Present the swap chain image
+  void drawFrame() {
+    // 1. Wait until the previous frame has finished
+    // Until then could CPU issue operations for the next frame
+    // auto fenceResult = device.waitForFences(*drawFence, vk::True, UINT64_MAX);
+
+    // 2. Acquire an image from the swap chain
+    auto [result, imageIndex] =
+        swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphore, nullptr);
+
+    // 3. Record a command buffer which draws the scene onto that image
+    recordCommandBuffer(imageIndex);
+    device.resetFences(*drawFence);
+
+    // 4. Submit the recorded command buffer
+    vk::PipelineStageFlags waitDestinationStageMask(
+        vk::PipelineStageFlagBits::eColorAttachmentOutput
+    );
+    const vk::SubmitInfo submitInfo {
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &*presentCompleteSemaphore,
+        .pWaitDstStageMask = &waitDestinationStageMask,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &*commandBuffer,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &*renderFinishedSemaphore
+    };
+    queue.submit(submitInfo, *drawFence);
+
+    // 1. Wait until the previous frame has finished
+    // Until then could CPU issue operations for the next frame
+    auto fenceResult = device.waitForFences(*drawFence, vk::True, UINT64_MAX);
+    if (fenceResult != vk::Result::eSuccess) {
+      throw std::runtime_error("failed to wait for fence!");
+    }
+
+    // 5. Present the swap chain image
+    const vk::PresentInfoKHR presentInfoKHR {
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &*renderFinishedSemaphore,
+        .swapchainCount = 1,
+        .pSwapchains = &*swapChain,
+        .pImageIndices = &imageIndex
+    };
+    auto presentResult = queue.presentKHR(presentInfoKHR);
+
+    switch (presentResult) {
+      case vk::Result::eSuccess:
+        break;
+      case vk::Result::eSuboptimalKHR:
+        std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n";
+        break;
+      default:
+        break; // an unexpected result is returned!
+    }
+  }
+
+  void createSyncObjects() {
+    presentCompleteSemaphore = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
+    renderFinishedSemaphore = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
+    drawFence = vk::raii::Fence(device, {.flags = vk::FenceCreateFlagBits::eSignaled});
   }
 };
 
