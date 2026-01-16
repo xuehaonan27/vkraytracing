@@ -26,22 +26,55 @@ constexpr bool enableValidationLayers = false;
 constexpr bool enableValidationLayers = true;
 #endif // NDEBUG
 
-static std::vector<char> readFile(const std::string& filename) {
-  // start read at the end of the file
-  std::ifstream file(filename, std::ios::ate | std::ios::binary);
-  if (!file.is_open()) {
-    throw std::runtime_error("failed to open file!");
+struct Vertex {
+  glm::vec2 pos;
+  glm::vec3 color;
+
+  // Tell Vulkan how to pass this data format (`Vertex`) to the vertex shader once uploaded to
+  // GPU memory. `VertexInputBindingDescription`: a vertex binding describes at which rate to
+  // load data from memory throughout the vertices.  It specifies the number of bytes between
+  // data entries and whether to move to the next data entry after each vertex or after each
+  // instance.
+  static vk::VertexInputBindingDescription getBindingDescription() {
+    return {.binding = 0, .stride = sizeof(Vertex), .inputRate = vk::VertexInputRate::eVertex};
   }
 
-  std::vector<char> buffer(file.tellg());
+  // An attribute description struct describes how to extract a vertex attribute from a chunk
+  // of vertex data originating from a binding description. We have two attributes, position and
+  // color, so we need two attribute description structs.
+  // .binding: tells vulkan from which binding the per-vertex data comes.
+  // .location: references the location directive of the input in the vertex shader.
+  // .format: describes the type of data for the attribute.
+  //     float : VK_FORMAT_R32_SFLOAT
+  //     float2: VK_FORMAT_R32G32_SFLOAT
+  //     float3: VK_FORMAT_R32G32B32_SFLOAT
+  //     float4: VK_FORMAT_R32G32B32A32_SFLOAT
+  //     int2  : VK_FORMAT_R32G32_SINT, a 2-component vector of 32-bit signed integers
+  //     uint4 : VK_FORMAT_R32G32B32A32_UINT, a 4-component vector of 32-bit unsigned integers
+  //     double: VK_FORMAT_R64_SFLOAT, a double-precision (64-bit) float
+  static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions() {
+    return {
+        vk::VertexInputAttributeDescription {
+            .location = 0,
+            .binding = 0,
+            .format = vk::Format::eR32G32Sfloat,
+            .offset = offsetof(Vertex, pos)
+        },
+        vk::VertexInputAttributeDescription {
+            .location = 1,
+            .binding = 0,
+            .format = vk::Format::eR32G32B32Sfloat,
+            .offset = offsetof(Vertex, color)
+        }
+    };
+  }
+};
 
-  // Seek back to the beginning of the file
-  file.seekg(0, std::ios::beg);
-  file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-  file.close();
-
-  return buffer;
-}
+const std::vector<Vertex> vertices = {
+    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+};
 
 class HelloTriangleApplication {
 public:
@@ -84,6 +117,9 @@ private:
   uint32_t frameIndex = 0;
   bool framebufferResized = false;
 
+  vk::raii::Buffer vertexBuffer = nullptr;
+  vk::raii::DeviceMemory vertexBufferMemory = nullptr;
+
   const std::vector<const char*> requiredDeviceExtension = {
       vk::KHRSwapchainExtensionName,
       vk::KHRSpirv14ExtensionName,
@@ -91,6 +127,23 @@ private:
       vk::KHRCreateRenderpass2ExtensionName,
       vk::KHRShaderDrawParametersExtensionName
   };
+
+  static std::vector<char> readFile(const std::string& filename) {
+    // start read at the end of the file
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+    if (!file.is_open()) {
+      throw std::runtime_error("failed to open file!");
+    }
+
+    std::vector<char> buffer(file.tellg());
+
+    // Seek back to the beginning of the file
+    file.seekg(0, std::ios::beg);
+    file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    file.close();
+
+    return buffer;
+  }
 
   void initWindow() {
     glfwInit();
@@ -116,6 +169,7 @@ private:
     createImageViews();
     createGraphicsPipeline();
     createCommandPool();
+    createVertexBuffer();
     createCommandBuffer();
     createSyncObjects();
   }
@@ -489,7 +543,14 @@ private:
     vk::PipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
 
     // Vertex input
-    vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+    auto bindingDescription = Vertex::getBindingDescription();
+    auto attributeDescriptions = Vertex::getAttributeDescriptions();
+    vk::PipelineVertexInputStateCreateInfo vertexInputInfo {
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &bindingDescription,
+        .vertexAttributeDescriptionCount = attributeDescriptions.size(),
+        .pVertexAttributeDescriptions = attributeDescriptions.data()
+    };
 
     // Input assembly
     vk::PipelineInputAssemblyStateCreateInfo inputAssembly {
@@ -681,6 +742,9 @@ private:
     commandBuffer.setViewport(0, viewport);
     commandBuffer.setScissor(0, scissor);
 
+    // Bind the vertex buffer
+    commandBuffers[frameIndex].bindVertexBuffers(0, *vertexBuffer, {0});
+
     // Issue the draw command for the triangle
     // (vertexCount, instanceCount, firstVertex, firstInstance)
     commandBuffer.draw(3, 1, 0, 0);
@@ -850,6 +914,57 @@ private:
   void cleanupSwapChain() {
     swapChainImageViews.clear();
     swapChain = nullptr;
+  }
+
+  void createVertexBuffer() {
+    vk::BufferCreateInfo bufferInfo {
+        .size = sizeof(vertices[0]) * vertices.size(),
+        .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+        .sharingMode = vk::SharingMode::eExclusive // only be jused from the graphics queue
+    };
+    vertexBuffer = vk::raii::Buffer(device, bufferInfo);
+
+    // Search for proper memory on the GPU
+    vk::MemoryRequirements memRequirements = vertexBuffer.getMemoryRequirements();
+
+    vk::MemoryAllocateInfo memoryAllocateInfo {
+        .allocationSize = memRequirements.size,
+        .memoryTypeIndex = findMemoryType(
+            memRequirements.memoryTypeBits,
+            // To ensure that Host could write directly into the GPU memory
+            // Note that specifying Host coherency leads to worse performance,
+            // compared to explicit flushing
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
+        )
+    };
+
+    // Allocate memory and bind to the buffer
+    vertexBufferMemory = vk::raii::DeviceMemory(device, memoryAllocateInfo);
+    vertexBuffer.bindMemory(*vertexBufferMemory, 0);
+
+    // Fill the vertex buffer with data
+    // First memory map the GPU memory to Host
+    void* data = vertexBufferMemory.mapMemory(0, bufferInfo.size);
+
+    // Write data from Host to GPU
+    memcpy(data, vertices.data(), bufferInfo.size);
+
+    // Written then unmap
+    vertexBufferMemory.unmapMemory();
+  }
+
+  uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
+    // query available types of memory
+    vk::PhysicalDeviceMemoryProperties memProperties = physicalDevice.getMemoryProperties();
+
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+      if ((typeFilter & (1 << i))
+          && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+        return i;
+      }
+    }
+
+    throw std::runtime_error("failed to find suitable memory type!");
   }
 };
 
