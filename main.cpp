@@ -1,4 +1,5 @@
 #define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+#define VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
 #include <vulkan/vulkan_raii.hpp>
 
 #define GLFW_INCLUDE_VULKAN
@@ -81,6 +82,7 @@ private:
   // Fence to synchronize operations between GPU and CPU
   std::vector<vk::raii::Fence> inFlightFences;
   uint32_t frameIndex = 0;
+  bool framebufferResized = false;
 
   const std::vector<const char*> requiredDeviceExtension = {
       vk::KHRSwapchainExtensionName,
@@ -93,8 +95,15 @@ private:
   void initWindow() {
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     window = glfwCreateWindow(WIDTH, HEIGHT, "vkraytracing", nullptr, nullptr);
+    glfwSetWindowUserPointer(window, this);
+    glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+  }
+
+  static void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+    auto app = reinterpret_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+    app->framebufferResized = true;
   }
 
   void initVulkan() {
@@ -121,6 +130,8 @@ private:
   }
 
   void cleanup() {
+    cleanupSwapChain();
+
     glfwDestroyWindow(window);
     glfwTerminate();
   }
@@ -737,11 +748,25 @@ private:
     if (fenceResult != vk::Result::eSuccess) {
       throw std::runtime_error("failed to wait for fence!");
     }
-    device.resetFences(*inFlightFences[frameIndex]);
 
     // 2. Acquire an image from the swap chain
     auto [result, imageIndex] =
         swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphores[frameIndex], nullptr);
+    // Due to VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS being defined, eErrorOutOfDateKHR can be checked as a result
+    // here and does not need to be caught by an exception.
+    if (result == vk::Result::eErrorOutOfDateKHR) {
+      recreateSwapChain();
+      return;
+    }
+    // On other success codes than eSuccess and eSuboptimalKHR we just throw an exception.
+    // On any error code, aquireNextImage already threw an exception.
+    else if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
+      assert(result == vk::Result::eTimeout || result == vk::Result::eNotReady);
+      throw std::runtime_error("failed to acquire swap chain image!");
+    }
+
+    // Only reset the fence if we are submitting work
+    device.resetFences(*inFlightFences[frameIndex]);
 
     // 3. Record a command buffer which draws the scene onto that image
     commandBuffers[frameIndex].reset();
@@ -772,14 +797,15 @@ private:
     };
     result = queue.presentKHR(presentInfoKHR);
 
-    switch (result) {
-      case vk::Result::eSuccess:
-        break;
-      case vk::Result::eSuboptimalKHR:
-        std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n";
-        break;
-      default:
-        break; // an unexpected result is returned!
+    // Due to VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS being defined, eErrorOutOfDateKHR can be checked as a result
+    // here and does not need to be caught by an exception.
+    if ((result == vk::Result::eSuboptimalKHR) || (result == vk::Result::eErrorOutOfDateKHR)
+        || framebufferResized) {
+      framebufferResized = false;
+      recreateSwapChain();
+    } else {
+      // There are no other success codes than eSuccess; on any error code, presentKHR already threw an exception.
+      assert(result == vk::Result::eSuccess);
     }
 
     // 6. Switch to next frame
@@ -803,6 +829,27 @@ private:
           vk::FenceCreateInfo {.flags = vk::FenceCreateFlagBits::eSignaled}
       );
     }
+  }
+
+  void recreateSwapChain() {
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(window, &width, &height);
+    while (width == 0 || height == 0) {
+      glfwGetFramebufferSize(window, &width, &height);
+      glfwWaitEvents();
+    }
+
+    device.waitIdle();
+
+    cleanupSwapChain();
+
+    createSwapChain();
+    createImageViews();
+  }
+
+  void cleanupSwapChain() {
+    swapChainImageViews.clear();
+    swapChain = nullptr;
   }
 };
 
