@@ -917,40 +917,76 @@ private:
   }
 
   void createVertexBuffer() {
-    vk::BufferCreateInfo bufferInfo {
-        .size = sizeof(vertices[0]) * vertices.size(),
-        .usage = vk::BufferUsageFlagBits::eVertexBuffer,
-        .sharingMode = vk::SharingMode::eExclusive // only be jused from the graphics queue
+    // 1. Know how much memory needed to hold data
+    vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+
+    // 2. Create staging buffer that could be read and write from Host
+    // Note that the usage of staging buffer is to transfer the held data to another buffer
+    vk::BufferCreateInfo stagingInfo {
+        .size = bufferSize,
+        .usage = vk::BufferUsageFlagBits::eTransferSrc,
+        .sharingMode = vk::SharingMode::eExclusive
     };
-    vertexBuffer = vk::raii::Buffer(device, bufferInfo);
-
-    // Search for proper memory on the GPU
-    vk::MemoryRequirements memRequirements = vertexBuffer.getMemoryRequirements();
-
-    vk::MemoryAllocateInfo memoryAllocateInfo {
-        .allocationSize = memRequirements.size,
+    vk::raii::Buffer stagingBuffer(device, stagingInfo);
+    vk::MemoryRequirements memRequirementsStaging = stagingBuffer.getMemoryRequirements();
+    vk::MemoryAllocateInfo memoryAllocateInfoStaging {
+        .allocationSize = memRequirementsStaging.size,
         .memoryTypeIndex = findMemoryType(
-            memRequirements.memoryTypeBits,
-            // To ensure that Host could write directly into the GPU memory
-            // Note that specifying Host coherency leads to worse performance,
-            // compared to explicit flushing
+            memRequirementsStaging.memoryTypeBits,
             vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
         )
     };
+    vk::raii::DeviceMemory stagingBufferMemory(device, memoryAllocateInfoStaging);
 
-    // Allocate memory and bind to the buffer
+    // 3. Bind staging buffer memory to the staging buffer and write data from Host
+    stagingBuffer.bindMemory(stagingBufferMemory, 0);
+    void* dataStaging = stagingBufferMemory.mapMemory(0, stagingInfo.size);
+    memcpy(dataStaging, vertices.data(), stagingInfo.size);
+    stagingBufferMemory.unmapMemory();
+
+    // 4. Create device buffer which could be accessed by GPU
+    vk::BufferCreateInfo bufferInfo {
+        .size = bufferSize,
+        .usage = vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst,
+        .sharingMode = vk::SharingMode::eExclusive
+    };
+    vertexBuffer = vk::raii::Buffer(device, bufferInfo);
+
+    vk::MemoryRequirements memRequirements = vertexBuffer.getMemoryRequirements();
+    vk::MemoryAllocateInfo memoryAllocateInfo {
+        .allocationSize = memRequirements.size,
+        .memoryTypeIndex =
+            findMemoryType(memRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)
+    };
     vertexBufferMemory = vk::raii::DeviceMemory(device, memoryAllocateInfo);
+
+    // 5. Bind device buffer memory to device buffer
     vertexBuffer.bindMemory(*vertexBufferMemory, 0);
 
-    // Fill the vertex buffer with data
-    // First memory map the GPU memory to Host
-    void* data = vertexBufferMemory.mapMemory(0, bufferInfo.size);
+    // 6. Copy data from staging buffer to device buffer
+    copyBuffer(stagingBuffer, vertexBuffer, stagingInfo.size);
+  }
 
-    // Write data from Host to GPU
-    memcpy(data, vertices.data(), bufferInfo.size);
-
-    // Written then unmap
-    vertexBufferMemory.unmapMemory();
+  void createBuffer(
+      vk::DeviceSize size,
+      vk::BufferUsageFlags usage,
+      vk::MemoryPropertyFlags properties,
+      vk::raii::Buffer& buffer,
+      vk::raii::DeviceMemory& bufferMemory
+  ) {
+    vk::BufferCreateInfo bufferInfo {
+        .size = size,
+        .usage = usage,
+        .sharingMode = vk::SharingMode::eExclusive
+    };
+    buffer = vk::raii::Buffer(device, bufferInfo);
+    vk::MemoryRequirements memRequirements = buffer.getMemoryRequirements();
+    vk::MemoryAllocateInfo allocInfo {
+        .allocationSize = memRequirements.size,
+        .memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties)
+    };
+    bufferMemory = vk::raii::DeviceMemory(device, allocInfo);
+    buffer.bindMemory(*bufferMemory, 0);
   }
 
   uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
@@ -965,6 +1001,43 @@ private:
     }
 
     throw std::runtime_error("failed to find suitable memory type!");
+  }
+
+  void copyBuffer(vk::raii::Buffer& srcBuffer, vk::raii::Buffer& dstBuffer, vk::DeviceSize size) {
+    // Memory transfer operations are executed using command buffers, just like drawing commands
+    vk::CommandBufferAllocateInfo allocInfo {
+        .commandPool = commandPool,
+        .level = vk::CommandBufferLevel::ePrimary,
+        .commandBufferCount = 1
+    };
+    vk::raii::CommandBuffer commandCopyBuffer =
+        std::move(device.allocateCommandBuffers(allocInfo).front());
+
+    // Immediately start recording the command buffer.
+    // Only use the command buffer once and wait with returning from the function until the copy
+    // operation has finished executing. So specify `eOneTimeSubmit`
+    commandCopyBuffer.begin(
+        vk::CommandBufferBeginInfo {.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit}
+    );
+
+    // Source buffer offset = 0, Destintion buffer offset = 0, Copy size = size
+    commandCopyBuffer.copyBuffer(srcBuffer, dstBuffer, vk::BufferCopy(0, 0, size));
+
+    commandCopyBuffer.end();
+
+    // Execute the command buffer to complete the transfer
+    // Unlike draw commands, there are no events we need to wait on this time. We just want to
+    // execute the transfer
+    std::vector<vk::raii::Fence> cpf;
+    cpf.emplace_back(device, vk::FenceCreateInfo {.flags = vk::FenceCreateFlagBits::eSignaled});
+    device.resetFences(*cpf[0]);
+    queue.submit(
+        vk::SubmitInfo {.commandBufferCount = 1, .pCommandBuffers = &*commandCopyBuffer},
+        *cpf[0]
+    );
+
+    auto fenceResult = device.waitForFences(*cpf[0], vk::True, UINT64_MAX);
+    // queue.waitIdle();
   }
 };
 
