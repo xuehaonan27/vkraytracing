@@ -5,7 +5,8 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES // Alignment required by
+#define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES // Alignment required by shaders
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE // OpenGL depth range from -1.0 to 1.0, but Vulkan requires 0.0 to 1.0
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -36,7 +37,7 @@ constexpr bool enableValidationLayers = true;
 #endif // NDEBUG
 
 struct Vertex {
-  glm::vec2 pos;
+  glm::vec3 pos;
   glm::vec3 color;
   glm::vec2 texCoord; // UV coordinates: actual texture coordinates for each vertex
 
@@ -68,7 +69,7 @@ struct Vertex {
         vk::VertexInputAttributeDescription {
             .location = 0,
             .binding = 0,
-            .format = vk::Format::eR32G32Sfloat,
+            .format = vk::Format::eR32G32B32Sfloat,
             .offset = offsetof(Vertex, pos)
         },
         // Describe color
@@ -89,13 +90,18 @@ struct Vertex {
 };
 
 const std::vector<Vertex> vertices = {
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}
+    {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+    {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+    {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+    {{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+
+    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+    {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+    {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
 };
 
-const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0};
+const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
 
 struct UniformBufferObject {
   alignas(16) glm::mat4 model;
@@ -165,6 +171,13 @@ private:
   vk::raii::ImageView textureImageView = nullptr;
   vk::raii::Sampler textureSampler = nullptr;
 
+  // Depth image
+  // A depth attachment is based on an image, just like the color attachment
+  // Only a single depth image is needed, because only one draw operation is running at once.
+  vk::raii::Image depthImage = nullptr;
+  vk::raii::DeviceMemory depthImageMemory = nullptr;
+  vk::raii::ImageView depthImageView = nullptr;
+
   const std::vector<const char*> requiredDeviceExtension = {
       vk::KHRSwapchainExtensionName,
       vk::KHRSpirv14ExtensionName,
@@ -215,6 +228,7 @@ private:
     createDescriptorSetLayout();
     createGraphicsPipeline();
     createCommandPool();
+    createDepthResources();
     createTextureImage();
     createTextureImageView();
     createTextureSampler();
@@ -646,7 +660,18 @@ private:
     };
 
     // Depth and stencil testing
-    // vk::PipelineDepthStencilStateCreateInfo;
+    vk::PipelineDepthStencilStateCreateInfo depthStencil {
+        .depthTestEnable = vk::True,
+        // If the new depth of fragments that pass the depth test should actually be written to
+        // the depth buffer (record it as new baseline). Otherwise all fragments are compared to
+        // an unchanging baseline.
+        .depthWriteEnable = vk::True,
+        // Lower depth = closer, so the depth of new fragments should be less
+        .depthCompareOp = vk::CompareOp::eLess,
+        .depthBoundsTestEnable = vk::False,
+        .stencilTestEnable = vk::False
+    };
+    vk::Format depthFormat = findDepthFormat();
 
     // Color blending
     vk::PipelineColorBlendAttachmentState colorBlendAttachment {
@@ -695,7 +720,6 @@ private:
 
     // Create the pipeline
     vk::GraphicsPipelineCreateInfo pipelineInfo {
-        .pNext = &pipelineRenderingCreateInfo,
         .stageCount = 2,
         .pStages = shaderStages,
         .pVertexInputState = &vertexInputInfo,
@@ -703,15 +727,26 @@ private:
         .pViewportState = &viewportState,
         .pRasterizationState = &rasterizer,
         .pMultisampleState = &multisampling,
+        .pDepthStencilState = &depthStencil,
         .pColorBlendState = &colorBlending,
         .pDynamicState = &dynamicState,
         .layout = pipelineLayout,
-        .renderPass = nullptr, // because using dynamic rendering instead of traditional render pass
-        .basePipelineHandle = VK_NULL_HANDLE,
-        .basePipelineIndex = -1
+        .renderPass = nullptr // because using dynamic rendering instead of traditional render pass
     };
 
-    graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
+    vk::StructureChain<vk::GraphicsPipelineCreateInfo, vk::PipelineRenderingCreateInfo>
+        pipelineCreateInfoChain = {
+            pipelineInfo,
+            {.colorAttachmentCount = 1,
+             .pColorAttachmentFormats = &swapChainSurfaceFormat.format,
+             .depthAttachmentFormat = depthFormat}
+        };
+
+    graphicsPipeline = vk::raii::Pipeline(
+        device,
+        nullptr,
+        pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>()
+    );
   }
 
   [[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char>& code) const {
@@ -752,30 +787,59 @@ private:
     // Instead, specify the attachments directly when begin rendering
     // Before starting rendering, transition the swapchain image to COLOR_ATTACHMENT_OPTIMAL
     transition_image_layout(
-        imageIndex,
+        swapChainImages[imageIndex],
         vk::ImageLayout::eUndefined,
         vk::ImageLayout::eColorAttachmentOptimal,
         {}, // srcAccessMask (no need to wait for previous operations)
         vk::AccessFlagBits2::eColorAttachmentWrite, // dstAccessMask
         vk::PipelineStageFlagBits2::eColorAttachmentOutput, // srcStage
-        vk::PipelineStageFlagBits2::eColorAttachmentOutput // dstStage
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput, // dstStage
+        vk::ImageAspectFlagBits::eColor
     );
 
-    // Set up the color attachment
+    // Since do not care the contents of the depth attachment once the frame is finished,
+    // we can always translate from eUndefined, which means do not care what happens before
+    transition_image_layout(
+        *depthImage,
+        vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eDepthAttachmentOptimal,
+        vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+        vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+        vk::PipelineStageFlagBits2::eEarlyFragmentTests
+            | vk::PipelineStageFlagBits2::eLateFragmentTests,
+        vk::PipelineStageFlagBits2::eEarlyFragmentTests
+            | vk::PipelineStageFlagBits2::eLateFragmentTests,
+        vk::ImageAspectFlagBits::eDepth
+    );
+
+    // Set up the attachments
     vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
-    vk::RenderingAttachmentInfo attachmentInfo = {
+    vk::ClearValue clearDepth =
+        vk::ClearDepthStencilValue(1.0f, 0); // 0.0 = near view plane, 1.0 = far view plane
+
+    vk::RenderingAttachmentInfo colorAttachmentInfo = {
         .imageView = swapChainImageViews[imageIndex],
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal, // the layout during rendering
         .loadOp = vk::AttachmentLoadOp::eClear, // what to do with the image before rendering
         .storeOp = vk::AttachmentStoreOp::eStore, // what to do with the image after rendering
         .clearValue = clearColor
     };
+    vk::RenderingAttachmentInfo depthAttachmentInfo = {
+        .imageView = depthImageView,
+        .imageLayout = vk::ImageLayout::eDepthAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eDontCare,
+        .clearValue = clearDepth
+    };
+
+    std::array attachmentInfos = {colorAttachmentInfo, depthAttachmentInfo};
 
     vk::RenderingInfo renderingInfo = {
         .renderArea = {.offset = {0, 0}, .extent = swapChainExtent},
         .layerCount = 1, // the number of layers to reader to, which is 1 for non-layered image
         .colorAttachmentCount = 1,
-        .pColorAttachments = &attachmentInfo
+        .pColorAttachments = &colorAttachmentInfo,
+        .pDepthAttachment = &depthAttachmentInfo
     };
 
     commandBuffer.beginRendering(renderingInfo);
@@ -821,13 +885,14 @@ private:
 
     // After rendering, transition the image layout back so it can be presented to the screen
     transition_image_layout(
-        imageIndex,
+        swapChainImages[imageIndex],
         vk::ImageLayout::eColorAttachmentOptimal,
         vk::ImageLayout::ePresentSrcKHR,
         vk::AccessFlagBits2::eColorAttachmentWrite,
         {},
         vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-        vk::PipelineStageFlagBits2::eBottomOfPipe
+        vk::PipelineStageFlagBits2::eBottomOfPipe,
+        vk::ImageAspectFlagBits::eColor
     );
 
     commandBuffer.end();
@@ -835,13 +900,14 @@ private:
 
   // Transition the image layout to one that is suitable for rendering
   void transition_image_layout(
-      uint32_t imageIndex,
+      vk::Image image,
       vk::ImageLayout oldLayout,
       vk::ImageLayout newLayout,
       vk::AccessFlags2 srcAccessMask,
       vk::AccessFlags2 dstAccessMask,
       vk::PipelineStageFlags2 srcStageMask,
-      vk::PipelineStageFlags2 dstStageMask
+      vk::PipelineStageFlags2 dstStageMask,
+      vk::ImageAspectFlags image_aspect_flags
   ) {
     vk::ImageMemoryBarrier2 barrier = {
         .srcStageMask = srcStageMask,
@@ -852,9 +918,9 @@ private:
         .newLayout = newLayout,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = swapChainImages[imageIndex],
+        .image = image,
         .subresourceRange = {
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .aspectMask = image_aspect_flags,
             .baseMipLevel = 0,
             .levelCount = 1,
             .baseArrayLayer = 0,
@@ -975,9 +1041,9 @@ private:
     device.waitIdle();
 
     cleanupSwapChain();
-
     createSwapChain();
     createImageViews();
+    createDepthResources();
   }
 
   void cleanupSwapChain() {
@@ -1455,16 +1521,18 @@ private:
   }
 
   void createTextureImageView() {
-    textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb);
+    textureImageView =
+        createImageView(textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
   }
 
-  vk::raii::ImageView createImageView(vk::raii::Image& image, vk::Format format) {
+  vk::raii::ImageView
+  createImageView(vk::raii::Image& image, vk::Format format, vk::ImageAspectFlags aspectFlags) {
     vk::ImageViewCreateInfo viewInfo {
         .image = image,
         .viewType = vk::ImageViewType::e2D,
         .format = format,
         .components = vk::ComponentSwizzle::eIdentity,
-        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}
+        .subresourceRange = {aspectFlags, 0, 1, 0, 1}
     };
     return vk::raii::ImageView(device, viewInfo);
   }
@@ -1498,6 +1566,67 @@ private:
     };
 
     textureSampler = vk::raii::Sampler(device, samplerInfo);
+  }
+
+  void createDepthResources() {
+    // Depth image should have the same resolution as the color attachment, defined by swap chain
+    // extent, an image usage appropriate for a depth attachment, optimal tiling and device local
+    // memory. The format for a depth image is not concerned, since the texels would be accessed
+    // and rendered, just have a reasonable accuracy is enough. 24 bits is common in real-world applications.
+
+    vk::Format depthFormat = findDepthFormat();
+
+    createImage(
+        swapChainExtent.width,
+        swapChainExtent.height,
+        depthFormat,
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eDepthStencilAttachment,
+        vk::MemoryPropertyFlagBits::eDeviceLocal,
+        depthImage,
+        depthImageMemory
+    );
+    depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
+  }
+
+  vk::Format findDepthFormat() {
+    return findSupportedFormat(
+        // vk::Format::eD32Sfloat: 32-bit float for depth
+        // vk::Format::eD32SfloatS8Uint: 32-bit signed float for depth and 8 bit stencil component
+        // vk::Format::eD24UnormS8Uint: 24-bit float for depth and 8 bit stencil component
+        {vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint, vk::Format::eD24UnormS8Uint},
+        vk::ImageTiling::eOptimal,
+        vk::FormatFeatureFlagBits::eDepthStencilAttachment
+    );
+  }
+
+  vk::Format findSupportedFormat(
+      const std::vector<vk::Format>& candidates,
+      vk::ImageTiling tiling,
+      vk::FormatFeatureFlags features
+  ) {
+    for (const auto format : candidates) {
+      // The vk::FormatProperties struct contains three fields:
+      //   linearTilingFeatures: Use cases that are supported with linear tiling
+      //   optimalTilingFeatures: Use cases that are supported with optimal tiling
+      //   bufferFeatures: Use cases that are supported for buffers
+      vk::FormatProperties props = physicalDevice.getFormatProperties(format);
+
+      if (tiling == vk::ImageTiling::eLinear
+          && (props.linearTilingFeatures & features) == features) {
+        return format;
+      }
+      if (tiling == vk::ImageTiling::eOptimal
+          && (props.optimalTilingFeatures & features) == features) {
+        return format;
+      }
+    }
+
+    throw std::runtime_error("failed to find supported format!");
+  }
+
+  bool hasStencilComponent(vk::Format format) {
+    return format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint;
   }
 };
 
