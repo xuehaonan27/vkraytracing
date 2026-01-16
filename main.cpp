@@ -5,11 +5,17 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES // Alignment required by
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+// C++ Headers
+
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
-#include <glm/glm.hpp>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -54,12 +60,14 @@ struct Vertex {
   //     double: VK_FORMAT_R64_SFLOAT, a double-precision (64-bit) float
   static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions() {
     return {
+        // Describe position
         vk::VertexInputAttributeDescription {
             .location = 0,
             .binding = 0,
             .format = vk::Format::eR32G32Sfloat,
             .offset = offsetof(Vertex, pos)
         },
+        // Describe color
         vk::VertexInputAttributeDescription {
             .location = 1,
             .binding = 0,
@@ -71,9 +79,18 @@ struct Vertex {
 };
 
 const std::vector<Vertex> vertices = {
-    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+};
+
+const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0};
+
+struct UniformBufferObject {
+  alignas(16) glm::mat4 model;
+  alignas(16) glm::mat4 view;
+  alignas(16) glm::mat4 proj;
 };
 
 class HelloTriangleApplication {
@@ -119,6 +136,17 @@ private:
 
   vk::raii::Buffer vertexBuffer = nullptr;
   vk::raii::DeviceMemory vertexBufferMemory = nullptr;
+  vk::raii::Buffer indexBuffer = nullptr;
+  vk::raii::DeviceMemory indexBufferMemory = nullptr;
+
+  vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
+  vk::raii::DescriptorPool descriptorPool = nullptr;
+  std::vector<vk::raii::DescriptorSet> descriptorSets;
+
+  // One UBO for one frame
+  std::vector<vk::raii::Buffer> uniformBuffers;
+  std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
+  std::vector<void*> uniformBuffersMapped;
 
   const std::vector<const char*> requiredDeviceExtension = {
       vk::KHRSwapchainExtensionName,
@@ -167,9 +195,14 @@ private:
     createLogicalDevice();
     createSwapChain();
     createImageViews();
+    createDescriptorSetLayout();
     createGraphicsPipeline();
     createCommandPool();
     createVertexBuffer();
+    createIndexBuffer();
+    createUniformBuffers();
+    createDescriptorPool();
+    createDescriptorSets();
     createCommandBuffer();
     createSyncObjects();
   }
@@ -578,7 +611,8 @@ private:
         .rasterizerDiscardEnable = vk::False,
         .polygonMode = vk::PolygonMode::eFill,
         .cullMode = vk::CullModeFlagBits::eBack,
-        .frontFace = vk::FrontFace::eClockwise,
+        // Because of Y-flip we did in the projection matrix
+        .frontFace = vk::FrontFace::eCounterClockwise,
         .depthBiasEnable = vk::False,
         .depthBiasSlopeFactor = 1.0f,
         .lineWidth = 1.0f
@@ -627,7 +661,8 @@ private:
     // Commonly used to pass the transformation matrix to the vertex shader, or to create texture
     // samplers in the fragment shader.
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo {
-        .setLayoutCount = 0,
+        .setLayoutCount = 1,
+        .pSetLayouts = &*descriptorSetLayout,
         .pushConstantRangeCount = 0
     };
     pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
@@ -744,10 +779,22 @@ private:
 
     // Bind the vertex buffer
     commandBuffers[frameIndex].bindVertexBuffers(0, *vertexBuffer, {0});
+    commandBuffers[frameIndex].bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint16);
+
+    // Bind descriptor set for each frame to the descriptors in the shader
+    commandBuffers[frameIndex].bindDescriptorSets(
+        vk::PipelineBindPoint::eGraphics,
+        pipelineLayout,
+        0,
+        *descriptorSets[frameIndex],
+        nullptr
+    );
+    commandBuffers[frameIndex].drawIndexed(indices.size(), 1, 0, 0, 0);
 
     // Issue the draw command for the triangle
     // (vertexCount, instanceCount, firstVertex, firstInstance)
-    commandBuffer.draw(3, 1, 0, 0);
+    // commandBuffer.draw(3, 1, 0, 0);
+    commandBuffers[frameIndex].drawIndexed(indices.size(), 1, 0, 0, 0);
 
     // Finishing up
     commandBuffer.endRendering();
@@ -828,6 +875,8 @@ private:
       assert(result == vk::Result::eTimeout || result == vk::Result::eNotReady);
       throw std::runtime_error("failed to acquire swap chain image!");
     }
+
+    updateUniformBuffer(frameIndex);
 
     // Only reset the fence if we are submitting work
     device.resetFences(*inFlightFences[frameIndex]);
@@ -967,6 +1016,34 @@ private:
     copyBuffer(stagingBuffer, vertexBuffer, stagingInfo.size);
   }
 
+  void createIndexBuffer() {
+    vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+
+    vk::raii::Buffer stagingBuffer({});
+    vk::raii::DeviceMemory stagingBufferMemory({});
+    createBuffer(
+        bufferSize,
+        vk::BufferUsageFlagBits::eTransferSrc,
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+        stagingBuffer,
+        stagingBufferMemory
+    );
+
+    void* data = stagingBufferMemory.mapMemory(0, bufferSize);
+    memcpy(data, indices.data(), (size_t)bufferSize);
+    stagingBufferMemory.unmapMemory();
+
+    createBuffer(
+        bufferSize,
+        vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer,
+        vk::MemoryPropertyFlagBits::eDeviceLocal,
+        indexBuffer,
+        indexBufferMemory
+    );
+
+    copyBuffer(stagingBuffer, indexBuffer, bufferSize);
+  }
+
   void createBuffer(
       vk::DeviceSize size,
       vk::BufferUsageFlags usage,
@@ -1038,6 +1115,126 @@ private:
 
     auto fenceResult = device.waitForFences(*cpf[0], vk::True, UINT64_MAX);
     // queue.waitIdle();
+  }
+
+  void createDescriptorSetLayout() {
+    // Every binding needs to be described through a VkDescriptorSetLayoutBinding struct.
+    vk::DescriptorSetLayoutBinding uboLayoutBinding {
+        .binding = 0,
+        .descriptorType = vk::DescriptorType::eUniformBuffer,
+        .descriptorCount = 1,
+        .stageFlags = vk::ShaderStageFlagBits::eVertex,
+        .pImmutableSamplers = nullptr
+    };
+    vk::DescriptorSetLayoutCreateInfo layoutInfo {
+        .pNext = nullptr,
+        .flags = {},
+        .bindingCount = 1,
+        .pBindings = &uboLayoutBinding
+    };
+    descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
+  }
+
+  void createUniformBuffers() {
+    uniformBuffers.clear();
+    uniformBuffersMemory.clear();
+    uniformBuffersMapped.clear();
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+      vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
+      vk::raii::Buffer buffer({});
+      vk::raii::DeviceMemory bufferMem({});
+      createBuffer(
+          bufferSize,
+          vk::BufferUsageFlagBits::eUniformBuffer,
+          vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+          buffer,
+          bufferMem
+      );
+      uniformBuffers.emplace_back(std::move(buffer));
+      uniformBuffersMemory.emplace_back(std::move(bufferMem));
+      // Only map UBO once and never unmap.
+      // Because the mapping is deterministic for the entire lifetime
+      uniformBuffersMapped.emplace_back(uniformBuffersMemory[i].mapMemory(0, bufferSize));
+    }
+  }
+
+  void updateUniformBuffer(uint32_t currentImage) {
+    static auto startTime = std::chrono::high_resolution_clock::now();
+
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float time =
+        std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+
+    UniformBufferObject ubo {};
+    ubo.model = glm::rotate(
+        glm::mat4(1.0f), // matrix to be multiplied
+        time * glm::radians(90.0f), // rotation angle expressed in radians
+        glm::vec3(0.0f, 0.0f, 1.0f) // rotation axis, recommended to be normalized
+    );
+    ubo.view = glm::lookAt(
+        glm::vec3(2.0f, 2.0f, 2.0f), // eye position
+        glm::vec3(0.0f, 0.0f, 0.0f), // center position
+        glm::vec3(0.0f, 0.0f, 1.0f) // up axis
+    );
+    ubo.proj = glm::perspective(
+        glm::radians(45.0f), // vertical field-of-view
+        static_cast<float>(swapChainExtent.width)
+            / static_cast<float>(swapChainExtent.height), // aspect ratio
+        0.1f, // near view plane
+        10.0f // far view plane
+    );
+
+    // GLM was originally designed for OpenGL, where the Y coordinate of the clip coordinates is
+    // inverted. The easiest way to compensate for that is to flip the sign on the scaling factor
+    // of the Y axis in the projection matrix. If you don’t do this, then the image will be
+    // rendered upside down.
+    ubo.proj[1][1] *= -1;
+
+    memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+  }
+
+  void createDescriptorPool() {
+    // Describe which descriptor types out descriptor sets are going to contain and how many
+    vk::DescriptorPoolSize poolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT);
+    // Allocate one of these descriptors for every grame
+    vk::DescriptorPoolCreateInfo poolInfo {
+        .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+        .maxSets = MAX_FRAMES_IN_FLIGHT,
+        .poolSizeCount = 1,
+        .pPoolSizes = &poolSize
+    };
+    descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
+  }
+
+  void createDescriptorSets() {
+    // Create one descriptor set for each frame in flight, all with the same layout
+    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *descriptorSetLayout);
+    vk::DescriptorSetAllocateInfo allocInfo {
+        .descriptorPool = descriptorPool,
+        .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+        .pSetLayouts = layouts.data()
+    };
+    descriptorSets.clear();
+    descriptorSets = device.allocateDescriptorSets(allocInfo);
+
+    // Configure the descriptors
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+      vk::DescriptorBufferInfo bufferInfo {
+          .buffer = uniformBuffers[i],
+          .offset = 0,
+          .range = sizeof(UniformBufferObject)
+      };
+      vk::WriteDescriptorSet descriptorWrite {
+          .dstSet = descriptorSets[i],
+          .dstBinding = 0,
+          .dstArrayElement = 0,
+          .descriptorCount = 1,
+          .descriptorType = vk::DescriptorType::eUniformBuffer,
+          .pBufferInfo = &bufferInfo
+      };
+      device.updateDescriptorSets(descriptorWrite, {});
+    }
   }
 };
 
