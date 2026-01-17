@@ -162,7 +162,7 @@ void UserInterface::DrawSettings() {
         ImGui::BulletText("F1: toggle Settings.");
         ImGui::BulletText("F2: toggle Statistics.");
         ImGui::BulletText(
-            "%c%c%c%c/SHIFT/CTRL: move camera.",
+            "%c%c%c%c/Space/Shift: move camera. (Like in Minecraft)",
             std::toupper(window.GetKeyName(GLFW_KEY_W, 0)[0]),
             std::toupper(window.GetKeyName(GLFW_KEY_A, 0)[0]),
             std::toupper(window.GetKeyName(GLFW_KEY_S, 0)[0]),
