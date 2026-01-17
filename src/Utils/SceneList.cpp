@@ -82,12 +82,13 @@ void AddRayTracingInOneWeekendCommonScene(
 
 const std::vector<std::pair<std::string, std::function<SceneAssets(SceneList::CameraInitialSate&)>>>
     SceneList::AllScenes = {
-        std::make_pair("Cube And Spheres", CubeAndSpheres),
+        // std::make_pair("Cube And Spheres", CubeAndSpheres),
         std::make_pair("Ray Tracing In One Weekend", RayTracingInOneWeekend),
         std::make_pair("Planets In One Weekend", PlanetsInOneWeekend),
         std::make_pair("Lucy In One Weekend", LucyInOneWeekend),
         std::make_pair("Cornell Box", CornellBox),
         std::make_pair("Cornell Box & Lucy", CornellBoxLucy),
+        std::make_pair("Giant Humanoid Plane Monster", GiantHumanoidPlaneMonster),
 };
 
 SceneAssets SceneList::CubeAndSpheres(CameraInitialSate& camera) {
@@ -332,4 +333,174 @@ SceneAssets SceneList::CornellBoxLucy(CameraInitialSate& camera) {
     models.push_back(lucy0);
 
     return std::forward_as_tuple(std::move(models), std::vector<Texture>());
+}
+
+#define TEXTURE_LOAD(path) textures.push_back(Texture::LoadTexture(path, Base::SamplerConfig()));
+
+SceneAssets SceneList::AbandonedWareHouse(CameraInitialSate& camera) {
+    camera.ModelView = lookAt(vec3(13, 2, 3), vec3(0, 1.0, 0), vec3(0, 1, 0));
+    camera.FieldOfView = 20;
+    camera.Aperture = 0.05f;
+    camera.FocusDistance = 10.0f;
+    camera.ControlSpeed = 5.0f;
+    camera.GammaCorrection = true;
+    camera.HasSky = true;
+
+    const bool isProc = true;
+
+    std::mt19937 engine(42);
+    std::function<float()> random = std::bind(std::uniform_real_distribution<float>(), engine);
+
+    std::vector<Model> models;
+    std::vector<Texture> textures;
+
+    models.push_back(Model::LoadModelGLTF("../assets/models/abandoned_warehouse/scene.gltf"));
+
+#define FOR_LIST_OF_VARIABLES(DO) \
+    DO("../assets/models/abandoned_warehouse/textures/briques-ss-fenetre_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/briques-sur-fenetre_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/colonne-beton.001_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/colonne-beton_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/DM_Watch_Your_Step_graffiti_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/fenetre.002_diffuse.jpeg") \
+    DO("../assets/models/abandoned_warehouse/textures/fenetre.002_specularGlossiness.png") \
+    DO("../assets/models/abandoned_warehouse/textures/fenetre.004_diffuse.jpeg") \
+    DO("../assets/models/abandoned_warehouse/textures/fenetre.004_specularGlossiness.png") \
+    DO("../assets/models/abandoned_warehouse/textures/fenetre.005_diffuse.jpeg") \
+    DO("../assets/models/abandoned_warehouse/textures/fenetre.005_specularGlossiness.png") \
+    DO("../assets/models/abandoned_warehouse/textures/fenetre.006_diffuse.jpeg") \
+    DO("../assets/models/abandoned_warehouse/textures/fenetre.006_specularGlossiness.png") \
+    DO("../assets/models/abandoned_warehouse/textures/gravas_diffuse.jpeg") \
+    DO("../assets/models/abandoned_warehouse/textures/gravas_specularGlossiness.png") \
+    DO("../assets/models/abandoned_warehouse/textures/material_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/mur-arriere_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/mur-droite_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/mur-fond_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/mur-gauche_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/palette.001_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/palette_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/pandagun_1280_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/poutre-toit.001_diffuse.png") \
+    DO( \
+        "../assets/models/abandoned_warehouse/textures/TexturesCom_CardboardPlain0019_2_alphamasked_S_diffuse.png" \
+    ) \
+    DO( \
+        "../assets/models/abandoned_warehouse/textures/TexturesCom_CardboardPlain0022_2_alphamasked_S_diffuse.png" \
+    ) \
+    DO( \
+        "../assets/models/abandoned_warehouse/textures/TexturesCom_CardboardPlain0026_2_alphamasked_S_diffuse.png" \
+    ) \
+    DO("../assets/models/abandoned_warehouse/textures/TexturesCom_DoorsRollup0044_M_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/TexturesCom_DoorsWoodBarn0017_M_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/toiture-tole.001_diffuse.png") \
+    DO("../assets/models/abandoned_warehouse/textures/toiture-tole_diffuse.png")
+
+    FOR_LIST_OF_VARIABLES(TEXTURE_LOAD)
+#undef FOR_LIST_OF_VARIABLES
+
+    return std::forward_as_tuple(std::move(models), std::move(textures));
+}
+
+SceneAssets SceneList::DeadByDaylight(CameraInitialSate& camera) {
+    camera.ModelView = lookAt(vec3(13, 2, 3), vec3(0, 1.0, 0), vec3(0, 1, 0));
+    camera.FieldOfView = 20;
+    camera.Aperture = 0.05f;
+    camera.FocusDistance = 10.0f;
+    camera.ControlSpeed = 5.0f;
+    camera.GammaCorrection = true;
+    camera.HasSky = true;
+
+    const bool isProc = true;
+
+    std::mt19937 engine(42);
+    std::function<float()> random = std::bind(std::uniform_real_distribution<float>(), engine);
+
+    std::vector<Model> models;
+    std::vector<Texture> textures;
+
+    models.push_back(Model::LoadModelGLTF("../assets/models/dead_by_daylight/scene.gltf"));
+
+#define FOR_LIST_OF_VARIABLES(DO) \
+    DO("../assets/models/dead_by_daylight/textures/AccHeadMat_baseColor.png") \
+    DO("../assets/models/dead_by_daylight/textures/AccMat_baseColor.png") \
+    DO("../assets/models/dead_by_daylight/textures/HeadMat_baseColor.png") \
+    DO("../assets/models/dead_by_daylight/textures/LeftArmMat_baseColor.png") \
+    DO("../assets/models/dead_by_daylight/textures/LegsMat_baseColor.png") \
+    DO("../assets/models/dead_by_daylight/textures/RightArmMat_baseColor.png") \
+    DO("../assets/models/dead_by_daylight/textures/TorsoMat_baseColor.png")
+
+    FOR_LIST_OF_VARIABLES(TEXTURE_LOAD)
+#undef FOR_LIST_OF_VARIABLES
+
+    return std::forward_as_tuple(std::move(models), std::move(textures));
+}
+
+SceneAssets SceneList::GiantHumanoidPlaneMonster(CameraInitialSate& camera) {
+    camera.ModelView = lookAt(vec3(23, 15, 30), vec3(0, 1.0, 0), vec3(0, 1, 0));
+    camera.FieldOfView = 40;
+    camera.Aperture = 0.0f;
+    camera.FocusDistance = 10.0f;
+    camera.ControlSpeed = 5.0f;
+    camera.GammaCorrection = true;
+    camera.HasSky = true;
+
+    const bool isProc = true;
+    const auto i = mat4(1);
+    const float scaleFactor = 10.0f;
+
+    std::mt19937 engine(42);
+    std::function<float()> random = std::bind(std::uniform_real_distribution<float>(), engine);
+
+    std::vector<Model> models;
+    std::vector<Texture> textures;
+
+    AddRayTracingInOneWeekendCommonScene(models, isProc, random);
+
+    auto obj0 = Model::LoadModelGLTF("../assets/models/giant_humanoid_plant_monster/scene.gltf");
+    auto obj1 = obj0;
+    auto obj2 = obj0;
+
+    // obj0.Transform(rotate(
+    //     scale(translate(i, vec3(0.0, 5.0f, 0)), vec3(scaleFactor)),
+    //     radians(-90.0f),
+    //     vec3(1, 0, 0)
+    // ));
+
+    obj1.Transform(rotate(
+        scale(translate(i, vec3(-10.0, 5.0f, 0)), vec3(scaleFactor)),
+        radians(-90.0f),
+        vec3(1, 0, 0)
+    ));
+    obj1.SetMaterial(Material::Dielectric(1.5f));
+
+    obj2.Transform(rotate(
+        scale(translate(i, vec3(10.0f, 5.0f, 0)), vec3(scaleFactor)),
+        radians(-90.0f),
+        vec3(1, 0, 0)
+    ));
+    obj2.SetMaterial(Material::Metallic(vec3(0.7f, 0.6f, 0.5f), 0.05f));
+
+    // models.push_back(std::move(obj0));
+    models.push_back(std::move(obj1));
+    models.push_back(std::move(obj2));
+
+    models.push_back(
+        Model::CreateSphere(vec3(4, 4, 0), 4.0f, Material::Metallic(vec3(1.0f), 0.0f, 1), isProc)
+    );
+
+    textures.push_back(
+        Texture::LoadTexture(
+            "../assets/models/giant_humanoid_plant_monster/textures/tripo_mat_d2b8c9f8_baseColor.jpeg",
+            Base::SamplerConfig()
+        )
+    );
+
+    textures.push_back(
+        Texture::LoadTexture(
+            "../assets/textures/land_ocean_ice_cloud_2048.png",
+            Base::SamplerConfig()
+        )
+    );
+
+    return std::forward_as_tuple(std::move(models), std::move(textures));
 }

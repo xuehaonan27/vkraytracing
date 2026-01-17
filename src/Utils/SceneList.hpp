@@ -34,6 +34,9 @@ class SceneList final {
     static SceneAssets LucyInOneWeekend(CameraInitialSate& camera);
     static SceneAssets CornellBox(CameraInitialSate& camera);
     static SceneAssets CornellBoxLucy(CameraInitialSate& camera);
+    static SceneAssets AbandonedWareHouse(CameraInitialSate& camera);
+    static SceneAssets DeadByDaylight(CameraInitialSate& camera);
+    static SceneAssets GiantHumanoidPlaneMonster(CameraInitialSate& camera);
 
     static const std::vector<std::pair<std::string, std::function<SceneAssets(CameraInitialSate&)>>>
         AllScenes;

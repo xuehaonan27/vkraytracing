@@ -55,10 +55,10 @@ bool ModelViewController::OnKey(
         case GLFW_KEY_D:
             cameraMovingRight_ = action != GLFW_RELEASE;
             return true;
-        case GLFW_KEY_LEFT_CONTROL:
+        case GLFW_KEY_LEFT_SHIFT:
             cameraMovingDown_ = action != GLFW_RELEASE;
             return true;
-        case GLFW_KEY_LEFT_SHIFT:
+        case GLFW_KEY_SPACE:
             cameraMovingUp_ = action != GLFW_RELEASE;
             return true;
         default:

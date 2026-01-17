@@ -13,6 +13,7 @@ namespace RayTrace {
 class Model final {
   public:
     static Model LoadModel(const std::string& filename);
+    static Model LoadModelGLTF(const std::string& filename);
     static Model CreateCornellBox(const float scale);
     static Model CreateBox(const glm::vec3& p0, const glm::vec3& p1, const Material& material);
     static Model CreateSphere(

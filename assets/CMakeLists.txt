@@ -1,4 +1,5 @@
-file(GLOB model_files models/*.obj models/*.mtl)
+# file(GLOB model_files models/*.obj models/*.mtl models/*.glb)
+file(COPY models/ DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/models)
 file(GLOB shader_files shaders/*.vert shaders/*.frag shaders/*.rgen shaders/*.rchit shaders/*.rint shaders/*.rmiss)
 file(GLOB texture_files textures/*.jpg textures/*.png textures/*.txt)
 

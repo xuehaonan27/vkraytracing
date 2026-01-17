@@ -1,3 +1,6 @@
 build/
 .vscode/
 CMakeUserPresets.json
+assets/models/abandoned_warehouse
+assets/models/dead_by_daylight
+assets/models/giant_humanoid_plant_monster
