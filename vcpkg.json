@@ -1,6 +1,15 @@
 {
   "dependencies": [
+    "boost",
     "glfw3",
-    "glm"
+    "glm",
+    {
+      "name": "imgui",
+      "features": [
+        "freetype",
+        "glfw-binding",
+        "vulkan-binding"
+      ]
+    }
   ]
 }
